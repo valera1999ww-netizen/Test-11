@@ -1,0 +1,32 @@
+name: Extract bot project
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        run: |
+          rm -rf database handlers keyboards middlewares services utils
+          rm -f bot.py render.yaml requirements.txt __init__.py .env.example
+          mkdir -p /tmp/bot
+          unzip -o reward_bot_project_repaired.zip -d /tmp/bot
+          cp -R /tmp/bot/* .
+          rm -rf /tmp/bot/**/__pycache__
+
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .
+          git commit -m "Extract repaired bot project" || echo "Nothing to commit"
+          git push
