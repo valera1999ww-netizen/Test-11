@@ -14,7 +14,7 @@ from database.models import AdminLog, PayoutMethod, Prize, TransactionType, User
 from keyboards.admin import admin_menu, confirm
 from keyboards.tasks import task_review
 from keyboards.withdraw import withdrawal_admin
-from services.admin import add_admin_log, dashboard, get_pending_withdrawals, get_prizes, list_methods, list_recent_users, set_method_active, set_prize_chance
+from services.admin import add_admin_log, get_pending_withdrawals, get_prizes, list_methods, list_recent_users, set_method_active, set_prize_chance
 from services.rewards import add_spins, credit_balance
 from services.settings import get_setting, set_setting
 from services.stats import dashboard as stats_dashboard
@@ -60,7 +60,7 @@ async def admin_open(callback: CallbackQuery, config: Config):
 async def adm_stats(callback: CallbackQuery, session: AsyncSession, config: Config):
     if not admin_only(callback, config):
         return
-    s = await dashboard(session)
+    s = await stats_dashboard(session)
     text = (
         "📊 <b>СТАТИСТИКА</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 Всього користувачів: <b>{s['total_users']}</b>\n"
