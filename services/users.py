@@ -8,193 +8,316 @@ from aiogram import Bot
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Referral, Transaction, TransactionType, User
-from services.settings import get_setting
+from database.models import (
+    Referral,
+    Transaction,
+    TransactionType,
+    User,
+)
 
+
+# ============================================================
+# НАЛАШТУВАННЯ КАНАЛУ
+# ============================================================
+
+CHANNEL_USERNAME = "@ua_2024k"
+
+
+# ============================================================
+# КОРИСТУВАЧ
+# ============================================================
 
 async def upsert_user(
     session: AsyncSession,
     tg_user,
-    referrer_tg_id: Optional[int] = None
+    referrer_tg_id: Optional[int] = None,
 ) -> User:
 
     user = await session.scalar(
-        select(User).where(User.telegram_id == tg_user.id)
+        select(User).where(
+            User.telegram_id == tg_user.id
+        )
     )
 
+    # --------------------------------------------------------
+    # НОВИЙ КОРИСТУВАЧ
+    # --------------------------------------------------------
+
     if user is None:
+
         user = User(
             telegram_id=tg_user.id,
             username=tg_user.username,
-            first_name=tg_user.first_name or "Користувач"
+            first_name=tg_user.first_name or "Користувач",
         )
 
-        if referrer_tg_id and referrer_tg_id != tg_user.id:
+        # Реферал
+        if (
+            referrer_tg_id
+            and referrer_tg_id != tg_user.id
+        ):
+
             referrer = await session.scalar(
-                select(User).where(User.telegram_id == referrer_tg_id)
+                select(User).where(
+                    User.telegram_id == referrer_tg_id
+                )
             )
 
             if referrer:
                 user.referrer_id = referrer.id
 
         session.add(user)
+
         await session.commit()
         await session.refresh(user)
 
-    else:
-        user.username = tg_user.username
-        user.first_name = tg_user.first_name or user.first_name
-        user.last_active_at = datetime.now(timezone.utc)
+        return user
 
-        await session.commit()
+    # --------------------------------------------------------
+    # ІСНУЮЧИЙ КОРИСТУВАЧ
+    # --------------------------------------------------------
+
+    user.username = tg_user.username
+
+    if tg_user.first_name:
+        user.first_name = tg_user.first_name
+
+    user.last_active_at = datetime.now(timezone.utc)
+
+    await session.commit()
 
     return user
 
 
+# ============================================================
+# ОТРИМАТИ КОРИСТУВАЧА
+# ============================================================
+
 async def get_user_by_tg_id(
     session: AsyncSession,
     telegram_id: int,
-    lock: bool = False
+    lock: bool = False,
 ) -> Optional[User]:
 
-    stmt = select(User).where(User.telegram_id == telegram_id)
+    query = select(User).where(
+        User.telegram_id == telegram_id
+    )
 
     if lock:
-        stmt = stmt.with_for_update()
+        query = query.with_for_update()
 
-    return await session.scalar(stmt)
+    return await session.scalar(query)
 
+
+# ============================================================
+# ПЕРЕВІРКА ПІДПИСКИ
+# ============================================================
 
 async def verify_subscription(
     session: AsyncSession,
     bot: Bot,
-    user: User
+    user: User,
 ) -> tuple[bool, str]:
 
     now = datetime.now(timezone.utc)
 
+    # --------------------------------------------------------
+    # Користувач заблокований
+    # --------------------------------------------------------
+
     if user.is_blocked:
         return False, "blocked"
 
-    # ВАЖЛИВО:
-    # більше НЕ використовуємо кеш 45 секунд.
-    # Кожне натискання "Перевірити підписку"
-    # робить реальну перевірку Telegram.
-
-    chat_id = await get_setting(
-        session,
-        "channel_chat_id",
-        ""
-    )
-
-    username = await get_setting(
-        session,
-        "channel_username",
-        ""
-    )
-
-    # Якщо є числовий ID каналу — використовуємо його.
-    # Для приватного каналу це ОБОВ'ЯЗКОВО.
-    if not chat_id:
-        if username:
-            chat_id = f"@{username.lstrip('@')}"
-        else:
-            user.is_subscribed = False
-            user.last_subscription_check = now
-
-            await session.commit()
-
-            return False, "not_configured"
+    # --------------------------------------------------------
+    # КОЖНА ПЕРЕВІРКА ЙДЕ НАПРЯМУ В TELEGRAM
+    # --------------------------------------------------------
+    # Кеш НЕ використовується.
+    # --------------------------------------------------------
 
     try:
+
         member = await bot.get_chat_member(
-            chat_id=chat_id,
-            user_id=user.telegram_id
+            chat_id=CHANNEL_USERNAME,
+            user_id=user.telegram_id,
         )
 
-        is_sub = member.status in {
-            "member",
-            "administrator",
-            "creator"
-        }
+        status = member.status
 
-    except Exception as e:
         print(
-            f"[SUBSCRIPTION ERROR] "
+            f"[SUB CHECK] "
             f"user={user.telegram_id} "
-            f"chat_id={chat_id} "
-            f"error={e}"
+            f"channel={CHANNEL_USERNAME} "
+            f"status={status}"
         )
 
-        is_sub = False
+        # ----------------------------------------------------
+        # ЗВИЧАЙНИЙ ПІДПИСНИК
+        # ----------------------------------------------------
 
-    user.is_subscribed = is_sub
-    user.last_subscription_check = now
+        if status == "member":
+            is_subscribed = True
 
-    await session.commit()
+        # ----------------------------------------------------
+        # АДМІНІСТРАТОР
+        # ----------------------------------------------------
 
-    return is_sub, "live"
+        elif status == "administrator":
+            is_subscribed = True
 
+        # ----------------------------------------------------
+        # ВЛАСНИК КАНАЛУ
+        # ----------------------------------------------------
+
+        elif status == "creator":
+            is_subscribed = True
+
+        # ----------------------------------------------------
+        # RESTRICTED
+        # ----------------------------------------------------
+        # Telegram може повертати restricted.
+        # Якщо is_member=True — користувач все одно є
+        # учасником каналу.
+        # ----------------------------------------------------
+
+        elif status == "restricted":
+
+            is_subscribed = bool(
+                getattr(member, "is_member", False)
+            )
+
+        # ----------------------------------------------------
+        # НЕ ПІДПИСАНИЙ / ВИЙШОВ
+        # ----------------------------------------------------
+
+        elif status == "left":
+            is_subscribed = False
+
+        # ----------------------------------------------------
+        # ЗАБЛОКОВАНИЙ КАНАЛОМ
+        # ----------------------------------------------------
+
+        elif status == "kicked":
+            is_subscribed = False
+
+        # ----------------------------------------------------
+        # НЕВІДОМИЙ СТАТУС
+        # ----------------------------------------------------
+
+        else:
+            is_subscribed = False
+
+        # ----------------------------------------------------
+        # ЗБЕРІГАЄМО РЕЗУЛЬТАТ
+        # ----------------------------------------------------
+
+        user.is_subscribed = is_subscribed
+        user.last_subscription_check = now
+
+        await session.commit()
+
+        print(
+            f"[SUB RESULT] "
+            f"user={user.telegram_id} "
+            f"subscribed={is_subscribed}"
+        )
+
+        return is_subscribed, "live"
+
+    # --------------------------------------------------------
+    # ПОМИЛКА TELEGRAM API
+    # --------------------------------------------------------
+
+    except Exception as error:
+
+        print(
+            f"[SUB CHECK ERROR] "
+            f"user={user.telegram_id} "
+            f"channel={CHANNEL_USERNAME} "
+            f"error={repr(error)}"
+        )
+
+        user.is_subscribed = False
+        user.last_subscription_check = now
+
+        await session.commit()
+
+        return False, "error"
+
+
+# ============================================================
+# СТАРТОВИЙ БОНУС + РЕФЕРАЛ
+# ============================================================
 
 async def grant_start_bonus_and_referral(
     session: AsyncSession,
-    user: User
+    user: User,
 ) -> tuple[bool, int]:
 
-    locked = await get_user_by_tg_id(
+    locked_user = await get_user_by_tg_id(
         session,
         user.telegram_id,
-        lock=True
+        lock=True,
     )
 
-    if locked is None:
+    if locked_user is None:
         return False, 0
 
     bonus_granted = False
     referral_spin_granted = 0
 
-    marker = await session.scalar(
+    # ========================================================
+    # СТАРТОВИЙ СПІН
+    # ========================================================
+
+    start_bonus_exists = await session.scalar(
         select(Transaction.id).where(
-            Transaction.user_id == locked.id,
-            Transaction.description == "START_BONUS"
+            Transaction.user_id == locked_user.id,
+            Transaction.description == "START_BONUS",
         )
     )
 
-    if marker is None:
-        locked.spins += 1
+    if start_bonus_exists is None:
+
+        locked_user.spins += 1
 
         session.add(
             Transaction(
-                user_id=locked.id,
+                user_id=locked_user.id,
                 tx_type=TransactionType.REFERRAL_SPIN,
                 amount=Decimal("0.00"),
-                balance_after=locked.balance,
+                balance_after=locked_user.balance,
                 description="START_BONUS",
             )
         )
 
         bonus_granted = True
 
-    if locked.referrer_id:
+    # ========================================================
+    # РЕФЕРАЛ
+    # ========================================================
 
-        existing = await session.scalar(
+    if locked_user.referrer_id:
+
+        referral_exists = await session.scalar(
             select(Referral).where(
-                Referral.referred_user_id == locked.id
+                Referral.referred_user_id == locked_user.id
             )
         )
 
-        if existing is None:
+        if referral_exists is None:
 
-            ref = Referral(
-                referrer_id=locked.referrer_id,
-                referred_user_id=locked.id
+            referral = Referral(
+                referrer_id=locked_user.referrer_id,
+                referred_user_id=locked_user.id,
             )
 
-            session.add(ref)
+            session.add(referral)
 
             referrer = await session.scalar(
                 select(User)
-                .where(User.id == locked.referrer_id)
+                .where(
+                    User.id == locked_user.referrer_id
+                )
                 .with_for_update()
             )
 
@@ -202,6 +325,7 @@ async def grant_start_bonus_and_referral(
 
                 referrer.referral_count += 1
 
+                # Кожні 3 реферали = +1 спін
                 if referrer.referral_count % 3 == 0:
 
                     referrer.spins += 1
@@ -223,29 +347,44 @@ async def grant_start_bonus_and_referral(
     return bonus_granted, referral_spin_granted
 
 
+# ============================================================
+# ПРОФІЛЬ
+# ============================================================
+
 async def get_profile(
     session: AsyncSession,
-    telegram_id: int
+    telegram_id: int,
 ) -> Optional[User]:
 
     return await get_user_by_tg_id(
         session,
-        telegram_id
+        telegram_id,
     )
 
 
-async def count_users(session: AsyncSession) -> int:
+# ============================================================
+# КІЛЬКІСТЬ КОРИСТУВАЧІВ
+# ============================================================
 
-    return int(
-        await session.scalar(
-            select(func.count()).select_from(User)
-        ) or 0
+async def count_users(
+    session: AsyncSession,
+) -> int:
+
+    result = await session.scalar(
+        select(func.count())
+        .select_from(User)
     )
 
+    return int(result or 0)
+
+
+# ============================================================
+# АКТИВНІ КОРИСТУВАЧІ
+# ============================================================
 
 async def count_active_users(
     session: AsyncSession,
-    hours: int = 24
+    hours: int = 24,
 ) -> int:
 
     threshold = (
@@ -253,18 +392,24 @@ async def count_active_users(
         - timedelta(hours=hours)
     )
 
-    return int(
-        await session.scalar(
-            select(func.count())
-            .select_from(User)
-            .where(User.last_active_at >= threshold)
-        ) or 0
+    result = await session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(
+            User.last_active_at >= threshold
+        )
     )
 
+    return int(result or 0)
+
+
+# ============================================================
+# НОВІ КОРИСТУВАЧІ
+# ============================================================
 
 async def count_new_users(
     session: AsyncSession,
-    days: int
+    days: int,
 ) -> int:
 
     threshold = (
@@ -272,10 +417,12 @@ async def count_new_users(
         - timedelta(days=days)
     )
 
-    return int(
-        await session.scalar(
-            select(func.count())
-            .select_from(User)
-            .where(User.created_at >= threshold)
-        ) or 0
+    result = await session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(
+            User.created_at >= threshold
+        )
     )
+
+    return int(result or 0)
