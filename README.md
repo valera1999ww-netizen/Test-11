@@ -115,3 +115,7 @@ reward_bot_project/
 ```
 
 > Render Free PostgreSQL станом на жовтень 2026 року має 1 GB та термін 30 днів; для постійного production сховища використовуйте платний план.
+
+
+## Channel configuration
+Set `CHANNEL_USERNAME` to your public channel username, for example `@ua_2024k`. For a private channel, set `CHANNEL_CHAT_ID` to the numeric chat ID as well. The bot must have sufficient rights in the channel to verify membership.

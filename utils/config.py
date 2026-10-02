@@ -18,6 +18,8 @@ class Config:
     web_host: str
     web_port: int
     broadcast_delay: float
+    channel_username: str
+    channel_chat_id: str
 
 
 def load_config() -> Config:
@@ -30,4 +32,6 @@ def load_config() -> Config:
         web_host=os.getenv("WEB_HOST", "0.0.0.0"),
         web_port=int(os.getenv("PORT", os.getenv("WEB_PORT", "10000"))),
         broadcast_delay=float(os.getenv("BROADCAST_DELAY", "0.08")),
+        channel_username=os.getenv("CHANNEL_USERNAME", "").strip(),
+        channel_chat_id=os.getenv("CHANNEL_CHAT_ID", "").strip(),
     )

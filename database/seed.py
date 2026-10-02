@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import os
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,8 +39,15 @@ async def seed_defaults(session: AsyncSession) -> None:
             PayoutMethod(name="💳 Інший доступний спосіб", kind="text"),
         ])
 
+    env_settings = {
+        "channel_username": os.getenv("CHANNEL_USERNAME", "").strip(),
+        "channel_chat_id": os.getenv("CHANNEL_CHAT_ID", "").strip(),
+    }
+
     for key, value in DEFAULT_SETTINGS.items():
         setting = await session.get(Setting, key)
         if setting is None:
-            session.add(Setting(key=key, value=value))
+            session.add(Setting(key=key, value=env_settings.get(key, value)))
+        elif not setting.value and env_settings.get(key):
+            setting.value = env_settings[key]
     await session.commit()
